@@ -1,0 +1,143 @@
+name: Terraform Security Pipeline
+
+# Runs on every PR/push that touches Terraform code, plus manual runs.
+# Flow: fmt/validate -> tfsec scan -> checkov scan -> (only if all pass) terraform plan
+# Any failed scan stops the pipeline before deploy.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write   # lets tfsec/checkov post PR comments
+
+env:
+  TF_WORKING_DIR: terraform
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Basic sanity checks - cheap, fail fast before spending time on scans
+  # ---------------------------------------------------------------------
+  validate:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Terraform fmt check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend, validate only)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+  # ---------------------------------------------------------------------
+  # 2. tfsec - fast Terraform-specific static analysis
+  # ---------------------------------------------------------------------
+  tfsec:
+    name: tfsec scan
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ${{ env.TF_WORKING_DIR }}
+          soft_fail: false          # non-zero exit on any finding -> job fails
+          format: default
+
+  # ---------------------------------------------------------------------
+  # 3. Checkov - broader policy-as-code scan (CIS benchmarks, secrets, etc.)
+  # ---------------------------------------------------------------------
+  checkov:
+    name: Checkov scan
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ env.TF_WORKING_DIR }}
+          framework: terraform
+          output_format: cli
+          soft_fail: false          # any HIGH/CRITICAL finding fails the job
+          quiet: true
+
+  # ---------------------------------------------------------------------
+  # 4. Plan - only runs if validate + both scans succeeded
+  # ---------------------------------------------------------------------
+  plan:
+    name: Terraform plan (gated)
+    runs-on: ubuntu-latest
+    needs: [validate, tfsec, checkov]
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Terraform plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform plan -no-color
+        # In a real environment this job would have AWS creds via OIDC
+        # (permissions-boundary'd role) and this plan step is the last
+        # gate before a separate "deploy" job/environment applies it.
+
+  # ---------------------------------------------------------------------
+  # 5. Deploy - placeholder showing the gate. Never reached if scans fail.
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Terraform apply (deploy)
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.ref == 'refs/heads/main' && success()
+    environment: production   # can require manual approval in repo settings
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Terraform apply (placeholder)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: echo "Deploy step placeholder — wire up 'terraform apply' with real backend/creds here."
