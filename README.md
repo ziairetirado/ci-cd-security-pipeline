@@ -4,6 +4,11 @@ A GitHub Actions pipeline that scans Terraform code for security misconfiguratio
 before it's allowed to deploy. If a scan finds a high/critical issue, the pipeline
 stops — the `plan` and `deploy` jobs never run.
 
+## Architecture
+
+<img width="1181" height="896" alt="Ci:CD Architecture Diagram" src="https://github.com/user-attachments/assets/3b77b24a-9576-4050-af39-cd4a67c97b26" />
+
+
 ## The problem
 
 Terraform makes it easy to stand up infrastructure fast, but that speed cuts both
